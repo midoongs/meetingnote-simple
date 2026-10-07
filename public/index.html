@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>회의록 정리기</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1c1f24; --muted:#6b7280; --line:#e3e6ea; --accent:#2563eb; --danger:#dc2626; --ok:#16a34a; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14161a; --card:#1d2025; --text:#e8eaed; --muted:#9aa1ab; --line:#2c3037; --accent:#60a5fa; --danger:#f87171; --ok:#4ade80; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.6 system-ui,"Malgun Gothic",sans-serif; }
+  main { max-width:860px; margin:0 auto; padding:24px 16px 64px; }
+  h1 { font-size:22px; margin:0 0 16px; }
+  h2 { font-size:15px; margin:20px 0 6px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:16px; }
+  .drop { border:2px dashed var(--line); border-radius:12px; padding:28px; text-align:center; color:var(--muted); cursor:pointer; }
+  .drop.over { border-color:var(--accent); color:var(--accent); }
+  button { font:inherit; border:1px solid var(--line); background:var(--card); color:var(--text); border-radius:8px; padding:6px 12px; cursor:pointer; }
+  button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  button.danger { color:var(--danger); }
+  .row { display:flex; align-items:center; gap:10px; padding:10px 0; border-top:1px solid var(--line); }
+  .row:first-child { border-top:0; }
+  .row .t { flex:1; min-width:0; cursor:pointer; }
+  .row .t b { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .muted { color:var(--muted); font-size:13px; }
+  .badge { font-size:12px; padding:2px 8px; border-radius:99px; border:1px solid var(--line); color:var(--muted); white-space:nowrap; }
+  .badge.done { color:var(--ok); } .badge.failed { color:var(--danger); }
+  ul { margin:4px 0; padding-left:20px; }
+  pre { white-space:pre-wrap; word-break:break-word; font:inherit; background:var(--bg); padding:12px; border-radius:8px; max-height:360px; overflow:auto; }
+  .bar { display:flex; gap:8px; margin-bottom:8px; }
+  .err { color:var(--danger); font-size:13px; }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>회의록 정리기</h1>
+
+  <div class="card">
+    <div class="drop" id="drop">wav 녹취 파일을 끌어다 놓거나 클릭해서 선택 (최대 200MB)</div>
+    <input type="file" id="file" accept=".wav,audio/wav,audio/x-wav" hidden>
+    <div class="err" id="uploadErr"></div>
+  </div>
+
+  <div class="card" id="detail" hidden>
+    <div class="bar">
+      <button id="back">← 목록</button>
+      <button class="danger" id="delDetail">삭제</button>
+    </div>
+    <div id="detailBody"></div>
+  </div>
+
+  <div class="card" id="listCard">
+    <div id="list"></div>
+  </div>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let current = null;
+
+const statusLabel = m => ({
+  processing: `받아쓰는 중… (시도 ${m.attempt})`,
+  waiting: `실패 — ${m.waitSec}초 후 재시도 (시도 ${m.attempt})`,
+  done: '완료',
+  failed: '실패',
+}[m.status] || m.status);
+
+async function api(url, opt) {
+  const r = await fetch(url, opt);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+
+async function refresh() {
+  const list = await api('/api/meetings');
+  $('#list').innerHTML = list.length ? list.map(m => `
+    <div class="row">
+      <div class="t" data-open="${m.id}">
+        <b>${esc(m.title)}</b>
+        <span class="muted">${new Date(m.createdAt).toLocaleString('ko-KR')}</span>
+      </div>
+      <span class="badge ${m.status}">${esc(statusLabel(m))}</span>
+      ${m.status === 'failed' ? `<button data-retry="${m.id}">다시 시도</button>` : ''}
+      <button class="danger" data-del="${m.id}">삭제</button>
+    </div>`).join('') : '<div class="muted">저장된 회의록이 없습니다.</div>';
+  if (current) showDetail(current, true);
+  const busy = list.some(m => ['processing', 'waiting'].includes(m.status));
+  setTimeout(refresh, busy ? 2000 : 8000);
+}
+
+async function showDetail(id, quiet) {
+  try {
+    const m = await api(`/api/meetings/${id}`);
+    current = id;
+    $('#detail').hidden = false; $('#listCard').hidden = true;
+    let html = `<h2 style="font-size:18px;margin-top:0">${esc(m.title)}</h2>
+      <div class="muted">${new Date(m.createdAt).toLocaleString('ko-KR')} · ${esc(m.fileName)}</div>`;
+    if (m.status === 'done') {
+      html += `<h2>요약</h2><p>${esc(m.summary)}</p>
+        <h2>결정사항</h2>${m.decisions?.length ? `<ul>${m.decisions.map(d => `<li>${esc(d)}</li>`).join('')}</ul>` : '<div class="muted">없음</div>'}
+        <h2>할 일</h2>${m.todos?.length ? `<ul>${m.todos.map(t => `<li>${esc(t.task)}${t.owner ? ` — <b>${esc(t.owner)}</b>` : ''}${t.due ? ` <span class="muted">(${esc(t.due)})</span>` : ''}</li>`).join('')}</ul>` : '<div class="muted">없음</div>'}
+        <h2>받아쓰기 전문</h2><pre>${esc(m.transcript)}</pre>`;
+    } else {
+      html += `<p>${esc(statusLabel(m))}</p>${m.error ? `<div class="err">${esc(m.error)}</div>` : ''}
+        ${m.status === 'failed' ? `<button class="primary" data-retry="${m.id}">다시 시도</button>` : ''}`;
+    }
+    $('#detailBody').innerHTML = html;
+  } catch (e) { if (!quiet) alert(e.message); closeDetail(); }
+}
+function closeDetail() { current = null; $('#detail').hidden = true; $('#listCard').hidden = false; }
+
+async function upload(f) {
+  $('#uploadErr').textContent = '';
+  if (!f) return;
+  if (!/\.wav$/i.test(f.name)) { $('#uploadErr').textContent = 'wav 파일만 올릴 수 있습니다.'; return; }
+  if (f.size > 200 * 1024 * 1024) { $('#uploadErr').textContent = '파일이 너무 큽니다 (최대 200MB).'; return; }
+  try {
+    await api('/api/meetings', { method: 'POST', body: f,
+      headers: { 'Content-Type': 'audio/wav', 'X-Filename': encodeURIComponent(f.name) } });
+    closeDetail(); refresh();
+  } catch (e) { $('#uploadErr').textContent = e.message; }
+}
+
+$('#drop').onclick = () => $('#file').click();
+$('#file').onchange = e => { upload(e.target.files[0]); e.target.value = ''; };
+$('#drop').ondragover = e => { e.preventDefault(); $('#drop').classList.add('over'); };
+$('#drop').ondragleave = () => $('#drop').classList.remove('over');
+$('#drop').ondrop = e => { e.preventDefault(); $('#drop').classList.remove('over'); upload(e.dataTransfer.files[0]); };
+$('#back').onclick = closeDetail;
+$('#delDetail').onclick = () => del(current);
+
+async function del(id) {
+  if (!confirm('이 회의록을 삭제할까요? 되돌릴 수 없습니다.')) return;
+  await api(`/api/meetings/${id}`, { method: 'DELETE' });
+  closeDetail(); refresh();
+}
+document.addEventListener('click', async e => {
+  const t = e.target.closest('[data-open],[data-del],[data-retry]');
+  if (!t) return;
+  if (t.dataset.open) showDetail(t.dataset.open);
+  if (t.dataset.del) del(t.dataset.del);
+  if (t.dataset.retry) { await api(`/api/meetings/${t.dataset.retry}/retry`, { method: 'POST' }); refresh(); }
+});
+refresh();
+if (location.hash.length > 1) showDetail(location.hash.slice(1), true);
+</script>
+</body>
+</html>
